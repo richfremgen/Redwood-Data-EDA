@@ -26,5 +26,8 @@ least the plots with days as x-axis are required. Comment on the range, continui
 
 ## 4. Interest Findings (30 pts)
 
+List three interesting findings about your EDA.
+
 ## 5. Graph Critique in the Paper (40 pts)
 
+Provide statistical critique of the provided paper.
