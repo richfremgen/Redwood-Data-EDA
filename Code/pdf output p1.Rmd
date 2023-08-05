@@ -1,0 +1,711 @@
+---
+title: 'Project 1 Redwood Data Report'
+author: "Richard Fremgen (Duke ID: 1078591), Matthew Dockman (Duke ID: 0738472)"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+---
+
+```{r setup, message=F, warning=F, echo=F}
+library(tidyverse)
+library(GGally)
+library(lubridate)
+library(imputeTS)
+require(magrittr)
+require(plyr)
+library(ggfortify)
+library(cluster)
+library(fpc)
+ggplot2::theme_set(ggplot2::theme_bw())
+knitr::opts_chunk$set(fig.align = 'center')
+```
+
+
+***
+
+```{r, echo=FALSE} 
+# Initial Load of data from Sakai 
+sonoma_all <- read.csv("data/sonoma-data-all.csv")
+sonoma_log <- read.csv("data/sonoma-data-log.csv")
+sonoma_net <- read.csv("data/sonoma-data-net.csv") 
+mote_location <- read.table("data/mote-location-data.txt", header = TRUE)
+sonoma_dates <- as.data.frame(t(read.table("data/sonoma-dates", sep = " ")))
+
+# Modify column names to make joins later on easier
+colnames(sonoma_dates) <- c("epoch", "epoch_Dates", "epoch_Days")
+colnames(mote_location) <- c("nodeid", "Height", "Drec", "Dist", "Tree")
+
+#Convert epoch column from character to numeric
+sonoma_dates$epoch <- as.numeric(sonoma_dates$epoch)
+```
+
+## 1 - Data Collection
+
+### 1 - Part (a) "A Macroscope in the Redwoods" Summary
+
+“A Macroscope in the Redwoods” by Tolle et al. presents a case study of a 70m coastal redwood tree in Sonoma, California over a 44-day period. The purpose of the study is to demonstrate the utility of wireless sensor networks in capturing a myriad of data of temporal and spatial quantities to describe complex interactions by examining the microclimate of a coastal redwood tree. Deploying 33 motes roughly two meters apart across almost the full height of the tree, Tolle et al. collect temperature, humidity, and solar radiation levels every five minutes for the 44-day period of study at a 49% yield for over 800,000 data points. Using a four- stage methodology to examine the data, the authors analyze the temporal trends, effects of node height, and spatial gradients. Ultimately, they conclude that employing such a vast network of motes allows tiny differences in position to be magnified into much larger differences on the resulting data. On this basis, the data can be utilized to verify already existing biological theories. Moreover, they assess the performance of the system network, noting that the success of a deployment depends critically on the management of the network and suggesting that it have a monitoring component to provide alerts when failures occur.  More importantly, this case study confirmed the veracity of wireless sensor networks and their functionality as “macroscopes” to provide large volumes of frequent temporal and spatial monitoring. The impact of the case study is that complex interactions that were previously unable to measured can now be explored in tremendous detail.
+
+### 1 - Part (b) Data Collection Summary 
+
+Collecting such vast quantities of data over such a horizon required meticulous planning on the part of the authors. Using (type of motes), these sensors must be protected from environmental factors while simultaneously ensuring that they can extract accurate information from the surrounding microclimate. To this end, the authors constructed a cylindrical enclosure for the sensors and conducted a two-stage calibration process. The first stage was to expose the PAR sensors to direct sunlight, exposing the sensors to greater variation than could an environmental chamber while confirming the responses of the sensors to varying incident light angles, and compared them to a reference PAR sensor. 
+
+The second stage was to place the temperature and humidity sensors in a controllable weather chamber in order to conduct a two-point calibration process. Once calibrated, the sensors were deployed roughly every two meters vertically at a radial distance from the trunk of 0.1-1.0m to ensure that the microclimatic trends that were observed were affecting the tree directly, not the broader environment. The sensors generally faced the west as that side of the tree provided the most protection against weathering. Over the course of the 44-day period of data collection, the sensor platform collected data on temperature, relative humidity, incident PAR, and reflective PAR. Total solar radiation and barometric pressure are included in the sensor node platform, but TSR is disregarded as redundant with the PAR values, and barometric pressure is deemed too diffuse a phenomenon to show significant differences along the height of the tree. 
+
+Data from the sensor network nodes was collected over an Mica2 node and stored in a local database before being passed over a GPRS cellular modem to an offsite database. In the event of network failure as well as to assess the performance of the network, a local data logging system was utilized as a backup storage database. In an attempt to expand upon this case study presented by Tolle et al., we clean the raw data that they present before performing our own multi-dimensional analysis upon it.
+
+
+## 2 - Data Cleaning
+
+### 2 - Part (a) Check Histograms of Variables 
+
+Figures 1 and 2 below present a comparison of the voltage, humidity, and humid_temp variables contained in the sonoma-data-log and sonoma-data-net files. As you can see, the voltage values contained in each data set are on different scales, due to the analog-to-digital converter (ADC) used in the MICA mote. Using the MICA mote user manual, the sonoma-data-net voltage values were converted to the proper voltage scale by using the formula $\frac{(0.6)(Voltage)}{2^n}$ where in $n = bits$, and in our case $n = 10$, based on the ADC used. This resulted in a new variables called **voltage_adj** to be created, which puts the voltages on the same scale.
+
+```{r, figures-side, fig.show = "hold", fig.cap='Variables from sonoma-data-log.csv', fig.align="center", out.width="30%", fig.ncol = 1, echo=FALSE}
+
+# Voltage Histogram from Log data set
+h_voltage1 <- hist(sonoma_log$voltage, plot=FALSE, breaks = 15)
+h_voltage1$density <- h_voltage1$counts/sum(h_voltage1$counts) * 100
+plot(h_voltage1, 
+     freq = FALSE,
+     col = "grey50", 
+     xlab = "Voltage Value", 
+     ylab = "% of Readings", 
+     main = NULL,
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humidity Histogram from Log data set
+h_humid1 <- hist(sonoma_log$humidity, plot=FALSE, breaks = 15)
+h_humid1$density <- h_humid1$counts/sum(h_humid1$counts) * 100
+plot(h_humid1, 
+     freq = FALSE,
+     col = "grey50", 
+     xlab = "Humidity Value", 
+     ylab = "% of Readings",
+     main = NULL,
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humid_Temp Histogram from Log data set
+h_temp1 <- hist(sonoma_log$humid_temp, plot=FALSE, breaks = 15)
+h_temp1$density <- h_temp1$counts/sum(h_temp1$counts) * 100
+plot(h_temp1, 
+     freq = FALSE,
+     col = "grey50", 
+     xlab = "Humid_Temp Value", 
+     ylab = "% of Readings",
+     main = NULL,
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+```
+
+```{r, figures-side2, fig.show = "hold", fig.cap='Variables from sonoma-data-net.csv', fig.align="center", out.width="30%", fig.ncol = 1, echo=FALSE}
+
+# Voltage Histogram from Net data set
+h_voltage2 <- hist(sonoma_net$voltage, plot=FALSE, breaks = 15)
+h_voltage2$density <- h_voltage2$counts/sum(h_voltage2$counts) * 100
+plot(h_voltage2, 
+     freq = FALSE,
+     col = "grey80", 
+     xlab = "Voltage Value", 
+     ylab = "% of Readings",
+     main = NULL,
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humidity Histogram from Net data set
+h_humid2 <- hist(sonoma_net$humidity, plot=FALSE, breaks = 15)
+h_humid2$density <- h_humid2$counts/sum(h_humid2$counts) * 100
+plot(h_humid2, 
+     freq = FALSE,
+     col = "grey80", 
+     xlab = "Humidity Value", 
+     ylab = "% of Readings",
+     main = NULL,
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humid_Temp Histogram from Log data set
+h_temp2 <- hist(sonoma_net$humid_temp, plot=FALSE, breaks = 15)
+h_temp2$density <- h_temp2$counts/sum(h_temp2$counts) * 100
+plot(h_temp2, 
+     freq = FALSE,
+     col = "grey80", 
+     xlab = "Humid_Temp Value", 
+     ylab = "% of Readings",
+     main = NULL,
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+```
+
+Additionally, we can observe the difference in the ranges of the humidity and temperature variables for both data sets. Clearly there are some data quality issues with the log data set, as most of the values are centered around 0, with some extreme outliers in the negative direction. The net data set also contains humidity values greater than 100, which is not possible for a parameter such as relative humidity that has a maximum value of 100%. Both of these observations played a role in the outlier analysis discussed in part (d). 
+
+In addition to the variables listed, we also determined that even though the incident PAR and reflected PAR variables were on the same scale, this scale was different from the PAR values discussed in the paper. This is due to the fact that the Hammamtsu S1087 photodiodes used in the experiment output PAR measurements into lux rather than PPFD. Therefore, we converted these values from lux into PPFD by using the following formula, $PPFD =Lux*0.0185$. This transformation was applied to both varibles in both datasets, and new variables called **hamabot_ppfd** and **hamatop_ppfd** were created.
+
+
+```{r, include=FALSE}
+# New voltage_adj variable to get the net voltage on the same scale as the log voltage
+# Formula obtanied from tech manual; 10 is the number of bits in the ADC
+sonoma_net <- sonoma_net %>%
+  mutate(voltage_adj = (0.6 *(2^10)) / voltage)
+
+# Create a voltage_adj for the log data so the data frames will join easily
+sonoma_log <- sonoma_log %>%
+  mutate(voltage_adj = voltage)
+```
+
+
+```{r, include=FALSE}
+# Convert hamatop variables to PPFD for log data 
+sonoma_log <- sonoma_log %>%
+  mutate(hamatop_ppfd = hamatop * 0.0185,
+         hamabot_ppfd = hamabot * 0.0185) 
+
+# Convert hamatop variables to PPFD for net data 
+sonoma_net <- sonoma_net %>%
+  mutate(hamatop_ppfd = hamatop * 0.0185,
+         hamabot_ppfd = hamabot * 0.0185) 
+```
+
+
+
+```{r, include=FALSE}
+# Combine net and log data frames
+sonoma_combine <- rbind(sonoma_log, sonoma_net)
+
+# Left join for sonoma_combine and sonoma_dates to fix the dates in sonoma_combine
+sonoma_join <- left_join(sonoma_combine, sonoma_dates, by = "epoch") 
+
+# Separate out the day of the week from the epoch_Dates field
+sonoma_join$epoch_Dates <- substring(sonoma_join$epoch_Dates, 5)
+sonoma_join$epoch_Dates <- as.character(sonoma_join$epoch_Dates)
+
+# Convert epoch column from character to numeric
+sonoma_join$epoch_Dates <- as.POSIXct(sonoma_join$epoch_Dates, format = "%b %d %T %Y")
+```
+
+### 2 - Part (b) Missing Values
+
+After combining both the log and net datasets, and adjusting the date/time variable **epoch_Date** by using the sonoma_dates data set, we focus on removing duplicate entries and missing values. Approximately 8,600 observations were found to be duplicate entries of one another when merging the log and net data sets, and 87,724 missing values were discovered among all of the variables in the merged data set. Missing values were present throughout the month of May; we observed a spike in missing values at the beginning of May due to an outage at the gateway. Overall though, the number of missing values is consistent besides a few, brief large drops. After removing the missing values, if we look at the distribution of observations by time, we see a decline over time, indicating that the percentage of missing values per day is roughly increasing. This is probably due to the storage in the local data logs filling up.
+
+
+```{r, include=FALSE}
+# Total number of missing values in the data frame
+sum(is.na(sonoma_join)) #87,724 total
+
+# Number of missing values by column
+colSums(is.na(sonoma_join)) 
+#12,532 missing values in each of humidity, humid_temp, humid_adj, hamatop, hamabot, hamatop_ppfd, hamabot_ppfd
+
+# Remove duplicate values
+sonoma_join <- sonoma_join %>%
+  distinct()
+
+# Remove Missing Values from somoma_join df
+sonoma_filtered <- sonoma_join %>%
+  filter(!is.na(humidity)) 
+
+# Total number of missing values in the new filtered data frame
+sum(is.na(sonoma_filtered)) # 0 missing values!
+```
+
+### 2 - Part (c) Merge in Location Data
+
+Next we joined the mote-location-data with the already combined log and net sonoma data; in this join we used **nodeid** as the primary key to join both tables via a left join. Our data frame now consisted of 395,342 observations with 20 variables. The 20 variables consisted of the original 11 variables from the net/log data frame (result_time, epoch, noteid, parent, voltage, depth, humidity, humid_temp, humid_adj, hamabot, hamatop), 3 new variables we created (voltage_adj, hamatop_ppfd, hamabot_ppfd), 2 new variables from the sonoma-dates file (epoch_Dates, epoch_Days), and 4 new variables from the mote-location data set (Height, Drec, Dist, Tree).
+
+```{r, include=FALSE}
+# Left join for sonoma_filter and mote_location to add in columns for height, direction, distance and tree
+sonoma_mote <- left_join(sonoma_filtered, mote_location, by = "nodeid") 
+```
+
+### 2 - Part (d) Visualize outliers
+
+In terms of outliers, we followed a similar approach to the one discussed in the paper. First, we removed observations that had a corresponding faulty voltage value. This meant that we removed observations that had a voltage value outside of the 2.4-3.0 V range, which was what the paper described as the optimal battery voltage range, where we have great confidence in the accuracy of the readings from the mote. Any observed voltage outside of this range is subject to faulty readings.  
+
+We also looked at the humidity variable, as preliminary exploratory data analysis (EDA) concluded that there were several recorded humidity values that were unobtainable (e.g. > 100 %). These observations were removed. Additionally, we applied a quantile approach to evaluate outliers for the humid_temp variable, which had a slight right-tailed distribution. The quantile approach used removed all observations that were greater than 28.8, by using the $Q3 +1.5*IQR$ approach to identify an outlier. After concluding outlier analysis, we removed additional missing values (~2,200) that were induced by the mole-location data set join. The impact of removing outliers is depicted in Figures 3 and 4.
+
+```{r, figures-outliers-before, fig.show = "hold", fig.cap='Variables before removing outliers', fig.align="center", out.width="30%", fig.ncol = 1, echo=FALSE}
+# Voltage_Adj Histogram from Combined data set
+h_voltage_adj1 <- hist(sonoma_mote$voltage_adj, plot=FALSE, breaks = 15)
+h_voltage_adj1$density <- h_voltage_adj1$counts/sum(h_voltage_adj1$counts) * 100
+plot(h_voltage_adj1, 
+     freq = FALSE,
+     col = "grey80", 
+     xlab = "Voltage Value", 
+     ylab = "% of Readings", 
+     main = "Voltage Histogram",
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humid Temp Histogram from Combined data set
+h_temp4 <- hist(sonoma_mote$humid_temp, plot=FALSE, breaks = 15)
+h_temp4$density <- h_temp4$counts/sum(h_temp4$counts) * 100
+plot(h_temp4, 
+     freq = FALSE,
+     col = "grey80", 
+     xlab = "Humid_Temp", 
+     ylab = "% of Readings", 
+     main = "Humid_Temp Histogram",
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humidity Histogram from Combined data set
+humid4 <- hist(sonoma_mote$humidity, plot=FALSE, breaks = 15)
+humid4$density <- humid4$counts/sum(humid4$counts) * 100
+plot(humid4, 
+     freq = FALSE,
+     col = "grey80", 
+     xlab = "Humidity", 
+     ylab = "% of Readings", 
+     main = "Humidity Histogram",
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+     
+```
+
+```{r, include=FALSE}
+
+# Filter out faulty voltage readings 
+# Any readig outside of 2.4 - 3.0 V range
+sonoma_voltage_filter <- sonoma_mote %>%
+  filter(voltage_adj >= 2.4 & voltage_adj <= 3.0) 
+```
+
+
+```{r, include=FALSE}
+# Remove outlier hamatop variables 
+sonoma_out1 <- sonoma_voltage_filter %>%
+  filter(humidity <= 100) 
+
+# Check out summary of humid_temp
+summary(sonoma_out1$humid_temp) # max values seem way too high for degree celcius temperature 
+
+# Number of missing values by column
+#  there are still some missing values from the motes-location data we brought in mote-location
+colSums(is.na(sonoma_out1)) 
+
+q3_temp <- quantile(sonoma_out1$humid_temp, 0.75)
+filter_temp <- q3_temp + 1.5*IQR(sonoma_out1$humid_temp)
+
+# Remove the remaining missing value and filter out high temperature values
+sonoma_clean <- sonoma_out1 %>%
+  filter(is.na(Height) == FALSE,
+         humid_temp < filter_temp)
+
+colSums(is.na(sonoma_clean)) # All missing values and outliers are now removed! 
+# Now we are all set - use sonoma_clean df as a basis for EDA in Part 3
+```
+
+
+```{r, figures-after-volt, fig.show = "hold", fig.cap='Variables after removing outliers', fig.align="center", out.width="30%", fig.ncol = 1, echo=FALSE}
+# Voltage_Adj Histogram from Combined data set
+h_voltage_adj2 <- hist(sonoma_clean$voltage_adj, plot=FALSE, breaks = 15)
+h_voltage_adj2$density <- h_voltage_adj2$counts/sum(h_voltage_adj2$counts) * 100
+plot(h_voltage_adj2, 
+     freq = FALSE,
+     col = "grey50", 
+     xlab = "Voltage Value", 
+     ylab = "% of Readings", 
+     main = "Voltage Historgram",
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humid Temp Histogram from Combined data set
+h_temp5 <- hist(sonoma_clean$humid_temp, plot=FALSE, breaks = 15)
+h_temp5$density <- h_temp5$counts/sum(h_temp5$counts) * 100
+plot(h_temp5, 
+     freq = FALSE,
+     col = "grey50", 
+     xlab = "Humid_Temp", 
+     ylab = "% of Readings", 
+     main = "Humid_Temp Histogram",
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+
+# Humidity Histogram from Combined data set
+humid5 <- hist(sonoma_clean$humidity, plot=FALSE, breaks = 15)
+humid5$density <- humid5$counts/sum(humid5$counts) * 100
+plot(humid5, 
+     freq = FALSE,
+     col = "grey50", 
+     xlab = "Humidity", 
+     ylab = "% of Readings", 
+     main = "Humidity Histogram",
+     cex.lab = 1.5,
+     cex.axis = 1.5)
+```
+
+### 2 - Part (e) Other Outliers Considered 
+
+The last variables to mention are the incident and reflect PAR values (hamabot_ppfd and hamatop_ppfd), which clearly both have a right skewed distribution. This is much in part to the extensive number of zero values that were observed for each variable - both had greater than 80% of values as 0. Even though the histogram and boxplots of these variables indicate that there are many outliers present, we ultimately decided not to remove these variables because according to the paper, these relatively "high" PAR values are normal for direct and reflected sunlight. Additionally, such a high number of zero values will make most values appear as outliers. Therefore, we kept these PAR values in the data set since they added true value to the analysis. We tended to be conservative in outlier rejection to allow the data to speak for itself. Just as the presence of outliers can bias our results, removing too much true variation can also bias our results.
+
+## 3 - Data Exploration
+
+```{r, include=FALSE}
+# Zoom in on a particular 1 week time period
+sonoma_tp <- sonoma_clean %>%
+  filter(epoch_Dates >= as.Date("2004-05-01") & epoch_Dates <= as.Date("2004-05-07")) %>%
+  select(epoch_Dates, humidity, humid_temp, hamatop_ppfd, hamabot_ppfd, Height )
+
+# Zoom in on a particular 1 day period
+sonoma_tp_day <- sonoma_clean %>%
+  filter(epoch_Dates >= as.Date("2004-05-01") & epoch_Dates <= as.Date("2004-05-02")) %>%
+  select(epoch_Dates, humidity, humid_temp, hamatop_ppfd, hamabot_ppfd, Height )
+```
+
+### 3 - Part (a) Pairwise Scatterplot
+
+We first examine the data by creating pairwise scatterplots of five variables: height, temperature, relative humidity, incident PAR, and reflected PAR. We chose to include only observations from May 1st to May 7th; this time period was selected because it offered the most complete view of the data in terms of number of observations. After May 7th, the number of observations noticeably decreases and including such data may bias our results. For example, the missing observations could be disproportionately during a certain time of day, which would affect our temperature and PAR values considerably. In examining the scatterplots, we see immediately that humidity and temperature have a strong inverse relationship. Moreover, height and reflected PAR have a direct relationship that appears nonlinear, namely quadratic. Among the other pairwise relationships, the scatterplots do not exhibit any strong correlations as the points appear to be randomly scattered across the distributions of both variables. 
+
+```{r, figures-scat-week, fig.show = "hold", fig.cap='Pairwise Scatterplot of Variables from May 1st - May 7th', fig.align="center", out.width="60%", fig.ncol = 1, echo=FALSE}
+# Pairwise Scatterplot by Week (May 1st - 7th)
+pairs(sonoma_tp[2:6], 
+      #lower.panel = NULL, 
+      cex = 0.01,
+      main = "Pairwise Scatterplots for May 1st - May 7th") 
+```
+
+### 3 - Part (b) Incident PAR predictor
+
+In particular, incident PAR contained an extensive number of zeroes, which constrained its ability to have a strong association with the other variables of interest. However, we did observe that in the scatterplot including incident PAR and reflected PAR, these variables appeared to almost take discrete values. In other words, this scatterplot consisted of what looked like horizontal and vertical lines. Considering incident PAR, we note that it has a 0.472 correlation with reflective PAR, which indicates a weak direct relationship. We attribute this to the fact that the PAR values tend to be 0 at the same time fairly often.
+
+### 3 - Part (c) Temporal Trends (Week)
+
+After considering just the height and value dimensions without regard for time, we now examine the temporal trends. As before, we first consider the week of May 1st-May 7th for the aforementioned reasons; the output of this trend analysis is shown in Figure 6. 
+
+```{r, figures-temp_trend_week, fig.show = "hold", fig.cap='Temporal Trends of Variables from May 1st - May 7th', fig.align="center", out.width="40%", fig.ncol = 1, echo=FALSE}
+# Humidity Trend
+sonoma_tp %>%
+  ggplot(aes(x = epoch_Dates, y = humidity)) +
+  geom_line(aes(color = Height)) +
+  ylab("Humidity") +
+  ggtitle("Humidity Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Humid_temp
+sonoma_tp %>%
+  ggplot(aes(x = epoch_Dates, y = humid_temp)) +
+  geom_line(aes(color = Height)) +
+  ylab("Humid_Temp") +
+  ggtitle("Humid_Temp Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Hamatop_ppfd
+sonoma_tp %>%
+  ggplot(aes(x = epoch_Dates, y = hamatop_ppfd)) +
+  geom_line(aes(color = Height)) +
+  ylab("Incident PAR") +
+  ggtitle("Incident PAR Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Hamabot_ppfd
+sonoma_tp %>%
+  ggplot(aes(x = epoch_Dates, y = hamabot_ppfd)) +
+  geom_line(aes(color = Height)) +
+  ylab("Reflected PAR") +
+  ggtitle("Reflected PAR Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+With regard to humidity, we can see early in the week in Figure 6, humidity was relatively low at an average of about 45% before reaching almost 100% late in the week. Within this general trend, we observe that over the course of each day, the humidity rapidly increases as the sun rises before gradually decreasing after the sun sets. For each node, though the time series appears rough and spiky, it appears to be continuous and is reminiscent of a realized path of Brownian motion. We notice as well that as the height decreases, the time series itself moves slightly up, indicating changes in height correspond to continuous changes in humidity. 
+
+Moving to temperature, we can make the same observations except that temperatures were higher earlier in the week before dropping later in the week and as height increases, the time series shifts down. These reversals from humidity to temperature indicate the inverse relationship we saw previously. As far as the incident PAR value, we see a spike each day around midday. The shape of the temporal trend is reminiscent of a delta function, so we can say that the changes in both PAR values are discontinuous. What is more is that regardless of temperature and humidity, the maximum incident PAR reached is the same every day at roughly 2000 ppfd. Even more interesting is that entire height of the tree obtains roughly the same maximum although it occurs later and later in the day as we move down the tree. 
+
+In terms of the reflected PAR, we observe that nodes placed higher on the redwood tree, on average, recorded higher levels of reflected PAR when compared to nodes closer to the ground. For nodes high up on the tree, every day there is a maximum spike in reflected PAR in the later afternoon. This spike in value, unlike incident PAR, has more of a continuous increase in value with a discontinuous sharp decrease and more of a variable maximum value that fluctuates above and below 150. Additionally, we can observe that nodes placed low on the redwood tree recorded nearly constant reflected PAR values < 50 ppfd throughout the day. 
+
+### 3 - Part (c) Temporal Trends (Day)
+
+In addition to the plotting temporal trends for a week time frame, we also plotted it for a single day, May 1st. The results are very similar to those above (since May 1st fell into the time range of the week selected), and can be seen in Figure 7. 
+
+```{r, figures-temp_trend_day, fig.show = "hold", fig.cap='Temporal Trends of Variables from May 1st', fig.align="center", out.width="40%", fig.ncol = 1, echo=FALSE}
+# Humidity Trend
+sonoma_tp_day %>%
+  ggplot(aes(x = epoch_Dates, y = humidity)) +
+  geom_line(aes(color = Height)) +
+  ylab("Humidity") +
+  ggtitle("Humidity Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Humid_temp
+sonoma_tp_day %>%
+  ggplot(aes(x = epoch_Dates, y = humid_temp)) +
+  geom_line(aes(color = Height)) +
+  ylab("Humid_Temp") +
+  ggtitle("Humid_Temp Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Hamatop_ppfd
+sonoma_tp_day %>%
+  ggplot(aes(x = epoch_Dates, y = hamatop_ppfd)) +
+  geom_line(aes(color = Height)) +
+  ylab("Incident PAR") +
+  ggtitle("Incident PAR Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Hamabot_ppfd
+sonoma_tp_day %>%
+  ggplot(aes(x = epoch_Dates, y = hamabot_ppfd)) +
+  geom_line(aes(color = Height)) +
+  ylab("Reflected PAR") +
+  ggtitle("Reflected PAR Trend") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+```
+
+
+```{r, include=FALSE}
+# Data frame to use to PCA and K-means clustering 
+sonoma_df <- sonoma_tp %>% 
+  select(-c(epoch_Dates))
+
+# PCA Analysis
+sonoma_pca <- prcomp(sonoma_df, scale = TRUE)
+summary(sonoma_pca)
+
+#Extract Eigenvalues of PCA Analysis
+(sonoma_eigenvalue <- as.vector(sonoma_pca$sdev^2)) 
+
+# Compute Eigenvalue sum
+(evalue_sum <- sum(sonoma_eigenvalue))
+
+# Extract the loading vector
+sonoma_loadings <- as.matrix(sonoma_pca$rotation)
+
+# Scree Plot
+# Create a df for PC and eigenvalues 
+pc <- 1:5 # PC 1-5
+pca_scree <- data.frame(pc, sonoma_eigenvalue)
+
+# Cumulative Sum Plot
+cumsum <- cumsum(sonoma_eigenvalue / evalue_sum)
+pce_cum_sum <- data.frame(pc, cumsum)
+
+# Pull pca scores 
+(sonoma_scores <- as.data.frame(as.matrix(sonoma_pca$x)))
+```
+
+### 3 - Part (d) PCA Analysis 
+
+We now move to principal component analysis of the data. Examining the eigenvalues, we see that the first two PCs explain almost 75% of the variation present in the data. Moreover, as seen in Figure 8, the first two eigenvalues sit comfortably above 1 before dropping to roughly 0.75. From these observations and applying Kaiser’s rule, which states to drop all principal components with eigenvalues less than 1, we can approximate the data in only two dimensions using the first two principal components. 
+
+```{r, scree-plot, fig.show = "hold", fig.cap='Scree Plots from PCA Analysis', fig.align="center", out.width="45%", fig.ncol = 1, echo=FALSE}
+# Plot Scree Plot
+ggplot(data = pca_scree, aes(x = pc, y = sonoma_eigenvalue)) +
+  geom_line() +
+  geom_point() +
+  ggtitle("Scree Plot 1") +
+  xlab("PC") +
+  ylab("Eigenvalues") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Plot Scree Plot - Cumulative Sum Method
+ggplot(data = pce_cum_sum, aes(x = pc, y = cumsum)) +
+  geom_line() +
+  geom_point() +
+  ggtitle("Scree Plot 2 (Cumulative Sum)") +
+  xlab("PC") +
+  ylab("Fraction of Variance Explained") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ylim(c(0,1))
+```
+
+## 4 - Interesting Findings
+
+### 4 - Part (a) Interesting Finding #1 (PCA Analysis)
+
+Plotting the principal component scores in Figure 9, corresponding to each observation in the 2-D plane and coloring according to each of the five variables in our scatterplots, we notice that PCA manages to sort all five variables successfully. As humidity increases, points move toward the fourth quadrant. As temperature increases, points move toward the second quadrant. As both PAR values and height increase, points move toward the third quadrant. Based on these observations, we suspect that the first two components principal component loadings for humidity and temperature are nearly parallel and opposite while the first two components of the loadings for the PAR values and height are nearly equal. It seems natural that humidity and temperature should be opposite given their inverse relationship, but it is not immediate why the PAR values and height should be almost equal. Even though reflected PAR and height exhibit an association, incident PAR does not exhibit a particularly strong association with either.
+
+```{r, figures-scat-pc_plot, fig.show = "hold", fig.cap='PC1 vs. PC2 colored by different variables', fig.align="center", out.width="30%", fig.ncol = 2, echo=FALSE}
+# Colored by Height
+sonoma_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = sonoma_df$Height)) +
+  geom_point() +
+  scale_color_gradient(low = "yellow", high = "firebrick1") +
+  ggtitle("Colored by Height") + 
+  labs(color = "Height") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Colored by Humidity
+sonoma_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = sonoma_df$humidity)) +
+  geom_point() +
+  scale_color_gradient(low = "yellow", high = "firebrick1") +
+  ggtitle("Colored by Humidity") +
+  labs(color = "Humidity") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Colored by Humid_Temp
+sonoma_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = sonoma_df$humid_temp)) +
+  geom_point() +
+  scale_color_gradient(low = "yellow", high = "firebrick1") +
+  ggtitle("Colored by Humid_Temp") +
+  labs(color = "Humid_Temp") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Colored by Incident PAR
+sonoma_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = sonoma_df$hamatop_ppfd)) +
+  geom_point() +
+  scale_color_gradient(low = "yellow", high = "firebrick1") +
+  ggtitle("Colored by Incident PAR") +
+  labs(color = "Incident PAR") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Colored by Reflected PAR
+sonoma_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = sonoma_df$hamabot_ppfd)) +
+  geom_point() +
+  scale_color_gradient(low = "yellow", high = "firebrick1") +
+  ggtitle("Colored by Reflected PAR") +
+  labs(color = "Reflected PAR") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+
+
+### 4 - Part (b) Interesting Finding #2 (K-Means Clustering)
+
+```{r, include=FALSE}
+# Set K = 2 - this was found to be the optimal vlaue (night vs. day)
+sonoma_k3 <- kmeans(scale(sonoma_df), centers = 2, nstart = 20) 
+
+# Add cluster to sonoma_df
+sonoma_clust <- sonoma_df %>%
+  mutate(clust = sonoma_k3$cluster)
+```
+
+Proceeding to clustering analysis, we perform K-means clustering on the data with K=3 initially. In so doing, we notice that two very large clusters are formed with a much smaller third cluster. Taking this into account, we attempt K-means with K=4. Again, we find two large clusters with two other significantly smaller ones. From this analysis, we conclude that there seems to be two distinct groups that are heterogeneous in some way. Conducting K-means with K=2 and creating histograms in Figure 10 based on the cluster assignments according to our variables of interest, we see that the distinction between the clusters is based on humidity and temperature. Observations with lower humidity and higher temperature values were placed into one cluster and those with higher humidity and lower temperature values were grouped into another. Noticing that during the day, temperatures tend to be higher with lower humidity levels while the opposite holds at night, we conclude that the clusters were sorted mostly according to the time of day. In hindsight, this observation that night and day observations are heterogeneous seems natural, but it is not obvious beforehand that clusters would be sorted in this manner; we were expecting observations to be sorted according to some combination of height and PAR values because these variables yielded the most variation in the data.
+
+```{r, kmeans-bar, fig.show = "hold", fig.cap='Histogram of Variables by Assigned Cluster', fig.align="center", out.width="40%", fig.ncol = 2, echo=FALSE, warning=FALSE, message = FALSE}
+# Humidity clustering 
+ggplot(data = sonoma_clust) +
+  geom_histogram(aes(x = humidity, fill = factor(clust)), show.legend = FALSE) +
+  facet_wrap(~clust, nc = 1) +
+  ggtitle("Humidity Cluster Comparison") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Humidd_Temp clustering 
+ggplot(data = sonoma_clust) +
+  geom_histogram(aes(x = humid_temp, fill = factor(clust)), show.legend = FALSE) +
+  facet_wrap(~clust, nc = 1) +
+  ggtitle("Humid_Temp Cluster Comparison") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Hamatop clustering 
+ggplot(data = sonoma_clust) +
+  geom_histogram(aes(x = hamatop_ppfd, fill = factor(clust)), show.legend = FALSE) +
+  facet_wrap(~clust, nc = 1) +
+  ggtitle("Incident PAR Cluster Comparison") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Hamabot clustering 
+ggplot(data = sonoma_clust) +
+  geom_histogram(aes(x = hamabot_ppfd, fill = factor(clust))) +
+  facet_wrap(~clust, nc = 1) +
+  labs(fill = "cluster") +
+  ggtitle("Reflected PAR Cluster Comparison") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+### 4 - Part (c) Interesting Finding #3 (Temporal Trend)
+
+Going back to the temporal trends, a very subtle phenomenon in the time series data is the existence of lagging. Increases in temperature along the upper portion of the tree precede increases in temperature along the bottom portion of the tree. Conversely, increases in humidity along the bottom portion of the tree precede these increases towards the top of the tree. These phenomena can be explained by the biological processes of the tree described by Tolle et al. As the canopy warms, heat is transferred down the tree until an equilibrium is reached or until cooling causes the process to reverse. On the other hand, though humidity fronts affect the canopy, the transpiration process of the tree moving water up its trunk eventually drives the observed humidity values. In a similar vein, as alluded to previously, we notice that the incident PAR values also possess a lagging effect. However, we are unable to explain precisely why this might occur. 
+
+## 5 - Graph Critique in the Paper
+
+
+```{r, include=FALSE}
+# Clean up hamabot_ppfd to take the log of the variable 
+sonoma_crit1 <- sonoma_clean %>%
+  filter(hamabot_ppfd > 0) %>%
+  mutate(hamabot_log = log(hamabot_ppfd)) 
+
+sonoma_crit2 <- sonoma_clean %>%
+  filter(hamabot_ppfd == 0) %>%
+  mutate(hamabot_log = 0)
+
+sonoma_crit3 <- rbind(sonoma_crit1, sonoma_crit2)
+
+# Clean up hamatop_ppfd to take the log of the variable 
+sonoma_crit4 <- sonoma_clean %>%
+  filter(hamatop_ppfd > 0) %>%
+  mutate(hamatop_log = log(hamatop_ppfd)) 
+
+sonoma_crit5 <- sonoma_clean %>%
+  filter(hamatop_ppfd == 0) %>%
+  mutate(hamatop_log = 0)
+
+sonoma_crit6 <- rbind(sonoma_crit4, sonoma_crit5)
+```
+
+### 5 - Part (a) Figure 3A
+
+Reconsidering the plots from Tolle's paper, we can observe that in Figure 3a of the paper, the two PAR histogram are extremely right skewed, and make it difficult for the reader to discern values > 0. This can be attributed to the fact that both variables contained a large number of zeroes in the data collected, which explains the presence of heavy right tails in both histograms. To better visualize this data, we can apply a log transform to both PAR values and replot the data as seen in Figure 11 of this report. 
+
+Looking at Figure 11 of this report, we see that the log transform does well to make nonzero values more visible. Though both distributions still have a strong right skewness, we can at least now interpret the frequency of all observed nonzero values.
+
+```{r, kmeans-log-transform, fig.show = "hold", fig.cap='Histogram of PAR Variables after Log Transformations', fig.align="center", out.width="45%", fig.ncol = 1, echo=FALSE}
+# Histograms with log transform
+hist(sonoma_crit3$hamabot_log,
+     main = "Histogram of hamabot_log with Log Transform",
+     xlab = "Log(hamabot_ppfd)")
+
+hist(sonoma_crit6$hamatop_log,
+     main = "Histogram of hamatop_log with Log Transform",
+     xlab = "Log(hamatop_ppfd)")
+```
+
+
+
+### 5 - Part (b) Figure 3c and 3d Comments
+
+Figures 3c and 3d from Tolle's paper are trying to convey the idea that the distributions of temperature and height are approximately equal regardless of where that node was located on the tree and the distributions for the PAR values have a heavier right tail for greater heights. For example, looking at the temperature plot in Figure 3c, we can observe that the distribution of the temperature value for each node is approximately equal to one another with roughly the same median, regardless of the height at which the node was located. Even though these plots illustrate the message that a node's variable distribution will be approximately equal to one another regardless of height, a better way to plot this can be found in Figure 12 of this report. 
+
+```{r, density-plot, fig.show = "hold", fig.cap='Overlapping Density Plots by Node Height', fig.align="center", out.width="40%", fig.ncol = 2, echo=FALSE}
+# Humid_Temp Plot
+sonoma_clean %>%
+  ggplot(aes(x=humid_temp)) +
+  geom_density(aes(group=Height, colour=Height)) +
+  ggtitle("Humid_Temp Density Plot by Node Height") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Humidity Plot
+sonoma_clean %>%
+  ggplot(aes(x=humidity)) +
+  geom_density(aes(group=Height, colour=Height)) +
+  ggtitle("Humidity Density Plot by Node Height") +
+  theme(plot.title = element_text(hjust = 0.5)) 
+
+# Incident Plot
+sonoma_crit6 %>%
+  ggplot(aes(x=hamatop_log)) +
+  geom_density(aes(group=Height, colour=Height)) +
+  ggtitle("Log(Incident PAR) Density Plot by Node Height") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+# Reflected Plot
+sonoma_crit3 %>%
+  ggplot(aes(x=hamabot_log)) +
+  geom_density(aes(group=Height, colour=Height)) +
+  ggtitle("Log(Reflected PAR) Density Plot by Node Height") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+By overlapping the probability density plots for the different node heights as seen in Figure 12, we can obtain a more effective representation of Figures 3c and 3d. The temperature and humidity plots clearly show that the probability distributions are roughly equal to one another for each node height. A similar feat is also obtained in the reflected and incident PAR plots, from which we can see the heavier right tails of the greater heights.
+
+One thing to note on the plots above is that there are instances where a particular node height differs slightly from the distribution of the other node heights. With such a large data set, this is expected and plots like those above will allow you to identify node heights that stray from the norm. Such is hard to discern in Tolle's Figure 3c and 3d plots because so many boxplots are placed into such a small plot, which in turn make it easy to "hide" these so-called discrepancies among the node height distributions.   
+
+### 5 - Part (c) Figure 4 Comments
+
+Figure 4 in Tolle's paper attempts to illustrate temporal trends for the four different variables of interest based on different sensor height levels. While this figure does well to achieve the notation that different node heights follow similar temporal trends through the day, it is very difficult to compare the different node heights. A better representation of this data is to use a temporal trend plot similar to the ones we produced in Figures 6 and 7 of this report, where we used a color gradient to differentiate between the different node heights. 
+
+The plot we produced in Figure 6 was duplicated on both a week and day long time scale and uses a black to blue color gradient to differentiate between the different node height, rather than use a series of colors as seen in Figure 4 of Tolle's report. Our plot allows for an easier interpretation of the data to differentiate how nodes at a low height (black color) compared to nodes at a higher height (light blue color). While it is valid that our temporal trend plots make it difficult to discern differences between nodes close in height (e.g. 49.4 ft vs 50.0 ft), our plot depicts an effective display for someone looking to generalize how one of the variables collected varies by node height. 
+
+### 5 - Part (d) Figure 7 Comments
+
+In Tolle's paper, Figure 7 presents four interesting ways to visualize the yield % differences between the net and log data sets. The shortcoming of these figures is that it is difficult to directly compare the yield % values between both data sets. Trying to trace between boxplots or data points to compare the two is unnatural. Perhaps a better way to display a yield % trend comparison would be to use a line plot of the daily (or hourly or for every epoch) average yield % of both data sets for the entirety of the experiment. The result of this apporach would be two yield % trend lines appearing on the same line plot, where one corresponds to the log data and the other to the net data. This would allow the visualization to directly compare a trend analysis between the two data sets on the same plot, without having to try to compare a series of boxplots plotted on top of one another. 
+
+Additionally, to provide an easier comparison between net and log yield, using a heat map is a more effective way to visualize the third plot that is comparing yield % by the height of each node. One could design a heat map of the tree so that the colors of each tile correspond to a yield % gradient (e.g. low yield % is blue and high yield % is red). Placing the heat map of each tree side-by-side (or side-by-side in a single column where the nodes with greatest height are on top) would allow you to easily compare how node height affected yield %. The use of color gradient and the placement of yield values for net and log data on the same plot would be conducive for future comparison between the data sets and node height. 
+
+***
+
